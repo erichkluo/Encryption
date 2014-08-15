@@ -1,41 +1,45 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*- 
 
-# Encryption Library for all version.
-
-# 更抽象化一点, 加密逻辑过程、Key生成过程分离! 这样对不同类型的文件再调用不同的类!
-
-# 如果这个类将无法解密的话返回什么错误? 上一级不应该出错而是应该调用新的类!
-
 import sys
 import os
 from Crypto import Random
-from Crypto.Cipher import AES
+from Crypto.Cipher import AES, Blowfish, CAST
 from Crypto.Hash import SHA256, RIPEMD, MD5
 from Crypto.Protocol.KDF import PBKDF2
 
-class DecryptError(Exception): pass
+# Error Types #
 
-class StandardOne:
+class DecryptError(Exception): pass
+class VersionError(Exception): pass
+
+# Standards #
+
+def Enclibv1_strong_random(length):
+    # return Random.new().read(length)
+    return os.urandom(length)
+
+def Enclibv1_pad(s, bs):
+    return s + (bs - len(s) % bs) * chr(bs - len(s) % bs)
+
+def Enclibv1_unpad(s, bs):
+    return s[:-ord(s[len(s)-1:])]
+
+class Enclibv1:
     """
-    Encryption Methods & Algorithms Standard Version One.
-    13 Aug 2014
-    Exception:
-        DecryptError
-        EncryptError
+    Encryption Methods & Algorithms Librayr Version 1.
+    THE FIRST VERSION OF THIS LIBRARY IS STILL UNDER ACTIVE DEVELOPMENT. BACKWARDS COMPATIBILITY SUPPORT MAY NOT BE PROVIDED. PLEASE DO NOT USE IT FOR PRODUCTION.
+    Usage:
+    encrypt(key, content): cascade encryption using CAST5-Blowfish-AES, with key strengthening.
+    decrypt(key, content): cascade decryption using CAST5-Blowfish-AES, with key strengthening.
     """
-    
     STRENGTH=32
     SALT_LENGTH=64
+    KEY_LENGTH=96
     HEADER_LENGTH=512
-    ENCRYPTED_HEADER_LENGTH=560 # @TODO: Compute is right away.
+    ENCRYPTED_HEADER_LENGTH=112 
     SD_VERSION="01"
-    salt=""
-    content_length=""
-
-    def strong_random(self, length=STRENGTH):
-        # @TODO: Make it system-independent.
-        return os.urandom(length)
+    ITERATIONS=3141
 
     def hash_SHA256(self, key, salt):
         h = SHA256.new()
@@ -47,126 +51,137 @@ class StandardOne:
         h.update(key+salt)
         return h.hexdigest()
 
-    def strong_hash(self, key, salt, method):
-        iterations = 20001
-        return PBKDF2(key, salt, dkLen=self.STRENGTH*4, count=iterations, prf=method)
+    def strong_hash(self, key, salt, length, method):
+        return PBKDF2(key, salt, dkLen=length, count=self.ITERATIONS, prf=method)
 
-    class AESCipher:
+    class AESCipher: #32bytes 的 key, block_size=16
         def __init__(self, key):
             self.bs = 32
             if len(key) >= 32:
                 self.key = key[:32]
             else:
-                self.key = self._pad(key)
+                self.key = Enclibv1_pad(key, self.bs)
         def encrypt(self, raw):
-            raw = self._pad(raw)
-            iv = os.urandom(AES.block_size)  ##HOW
+            raw = Enclibv1_pad(raw, self.bs)
+            iv = Enclibv1_strong_random(AES.block_size)
             cipher = AES.new(self.key, AES.MODE_CBC, iv)
-            # cipher=AES.new(self.key, AES.MODE_ECB)
             return iv + cipher.encrypt(raw)
-            # return cipher.encrypt(raw)
         def decrypt(self, enc):
             iv = enc[:AES.block_size]
             cipher = AES.new(self.key, AES.MODE_CBC, iv)
-            # cipher=AES.new(self.key, AES.MODE_ECB)
-            return self._unpad(cipher.decrypt(enc[AES.block_size:]))
-            # return self._unpad(cipher.decrypt(enc))
-        def _pad(self, s):
-            return s + (self.bs - len(s) % self.bs) * chr(self.bs - len(s) % self.bs)
-        def _unpad(self, s):
-            return s[:-ord(s[len(s)-1:])]
+            return Enclibv1_unpad(cipher.decrypt(enc[AES.block_size:]), self.bs)
 
-    def get_header(self, key, filename):
-        header="TRUE"+self.SD_VERSION+"FILE$"+filename+"$"
-        if len(header)<self.HEADER_LENGTH:
-            header=header+self.strong_random(self.HEADER_LENGTH-len(header)) # 到这里 Header 应该为 512 bytes
-        h=self.AESCipher(key)
-        header=h.encrypt(header) # 加密后的 Header 应该为 560 bytes ADJUSTED
-        header=self.salt+header
-        return header
+    class BlowfishCipher: #32bytes 的 key, block_size=16
+        def __init__(self, key):
+            self.bs=32
+            if len(key)>=32:
+                self.key=key[:32]
+            else:
+                self.key=Enclibv1_pad(key, self.bs)
+        def encrypt(self, raw):
+            raw=Enclibv1_pad(raw, self.bs)
+            iv = Enclibv1_strong_random(Blowfish.block_size)
+            cipher = Blowfish.new(self.key, Blowfish.MODE_CBC, iv)
+            return iv + cipher.encrypt(raw)
+        def decrypt(self, enc):
+            iv = enc[:Blowfish.block_size]
+            cipher = Blowfish.new(self.key, Blowfish.MODE_CBC, iv)
+            return Enclibv1_unpad(cipher.decrypt(enc[Blowfish.block_size:]), self.bs)
 
-    def wipe_file(self, filename):
-        wipe_handle=open(filename, 'wb')
-        for i in xrange(self.content_length % 16):
-            wipe_handle.write(self.strong_random(16))
-        wipe_handle.close()
-        os.remove(filename)
+    class CASTCipher: #16 bytes 的 key, block_size=8
+        def __init__(self, key):
+            self.bs=16
+            if len(key)>=16:
+                self.key=key[:16]
+            else:
+                self.key=Enclibv1_pad(key, self.bs)
+        def encrypt(self, raw):
+            raw=Enclibv1_pad(raw, self.bs)
+            iv = Enclibv1_strong_random(CAST.block_size)
+            cipher = CAST.new(self.key, CAST.MODE_CBC, iv)
+            return iv + cipher.encrypt(raw)
+        def decrypt(self, enc):
+            iv = enc[:CAST.block_size]
+            cipher = CAST.new(self.key, CAST.MODE_CBC, iv)
+            return Enclibv1_unpad(cipher.decrypt(enc[CAST.block_size:]), self.bs)
 
-    def encrypt(self, key, inputfile, outputfile=""):
-        # Initialization
-        self.salt=self.strong_random(self.SALT_LENGTH)
-        key=self.strong_hash(key, self.salt, self.hash_SHA256) # NOW WE HAVE 128 bytes Key
-        operation_key=key[0:16]
-        key1 = key[32:64]
-        key2 = key[64:96]
-        key3 = key[96:128]
-        # File handling
-        if outputfile=="":
-            outputfile=inputfile+".lock"
-        inputfile_handle=open(inputfile,'rb')
-        outputfile_handle=open(inputfile+'.lock','wb')
-        inputfile_name=inputfile.split('/')[-1]
-        header=self.get_header(key1, inputfile_name)
-        content=inputfile_handle.read()
-        self.content_length=len(content)+self.ENCRYPTED_HEADER_LENGTH
-        # Encryption Process
-        e=self.AESCipher(key1)
-        content=e.encrypt(content)
-        outputfile_handle.write(header)
-        outputfile_handle.write(content)
-        inputfile_handle.close()
-        outputfile_handle.close()
+    def make_keys(self, key, salt):
+        key=self.strong_hash(key, salt, self.KEY_LENGTH, self.hash_RIPEMD)
+        key=self.strong_hash(key, salt, self.KEY_LENGTH, self.hash_SHA256)
+        key1 = key[0:32]
+        key2 = key[32:64]
+        key3 = key[64:96]
+        return [key1, key2, key3]
 
-        # Wipe Input file
-        self.wipe_file(inputfile)
-        return True
+    def encrypt(self, key, content):
+        """
+        Enclib v1 Cascade encryption using CAST5-Blowfish-AES, with key strengthening.
+        Example: 
+            encrypt(key="password", content="TOPSECRET")
+        Parameter:
+            key(str): the original key used for encryption
+            content(str): the content to be encrypted
+        Returns:
+            (str) the encrypted content
+        """
+        # Encrypt a block
+        # CAST5-Blowfish-AES
+        salt=Enclibv1_strong_random(self.SALT_LENGTH)
+        keys = self.make_keys(key, salt) # Salt will also be generated.
+        ciphers=[self.CASTCipher(keys[0]), self.BlowfishCipher(keys[1]), self.AESCipher(keys[2])]
+        # Generate header with random string
+        header="TRUE"+self.SD_VERSION
+        header=header+Enclibv1_strong_random(16-len(header))
+        # Encryption process and header generation
+        for cipher in ciphers:
+            content=cipher.encrypt(content)
+            header=cipher.encrypt(header)
+        # Encrypted header shoule be 112 byte long.
+        return salt+header+content
 
-    def decrypt(self, key, inputfile, outputfile=""):
-        status = self.verify_file(key, inputfile, outputfile)
-        self.wipe_file(inputfile)
-        return status
-
-    def decrypt_content(self, key, inputfile_handle, outputfile_handle):
-        # Key spliting
-        operation_key=key[0:16]
-        key1 = key[32:64]
-        key2 = key[64:96]
-        key3 = key[96:128]
-        e=self.AESCipher(key1)
-        content=inputfile_handle.read()
-        self.content_length=len(content)+self.ENCRYPTED_HEADER_LENGTH
-        content=e.decrypt(content)
-        outputfile_handle.write(content)
-        inputfile_handle.close()
-        outputfile_handle.close()
-        # Wipe File
-        return True
-
-    def verify_file(self, key, inputfile, outputfile=""):
-        inputfile_handle=open(inputfile,'rb')
-        self.salt=inputfile_handle.read(self.SALT_LENGTH)
-        key=self.strong_hash(key, self.salt, self.hash_SHA256)
-        header=inputfile_handle.read(self.ENCRYPTED_HEADER_LENGTH)
-        # Key spliting
-        operation_key=key[0:16]
-        key1 = key[32:64]
-        key2 = key[64:96]
-        key3 = key[96:128]
-        # Decrypt the header
-        h=self.AESCipher(key1)
-        header=h.decrypt(header)
-        if header[:4]!="TRUE":
+    def decrypt(self, key, content):
+        """
+        Enclib v1 Cascade decryption using CAST5-Blowfish-AES, with key strengthening.
+        Example: 
+            decrypt(key="password", content="ENCRYPTED_CONTENT")
+        Parameter:
+            key(str): the original key used for encryption
+            content(str): the content to be decrypted
+        Returns:
+            (str) the original content
+        Error:
+            DecryptError: Cannot be decrypted. Maybe it's not valid encrypted data,
+                or the password may be incorrected.
+            VersionError: This version does not support this standard.
+        """
+        # AES-Blowfish-CAST5
+        salt = content[:self.SALT_LENGTH]
+        assert len(salt) == self.SALT_LENGTH
+        header = content[self.SALT_LENGTH:self.SALT_LENGTH+self.ENCRYPTED_HEADER_LENGTH]
+        assert len(header) == self.ENCRYPTED_HEADER_LENGTH
+        content = content[self.SALT_LENGTH+self.ENCRYPTED_HEADER_LENGTH:]
+        keys = self.make_keys(key, salt)
+        ciphers=[self.AESCipher(keys[2]), self.BlowfishCipher(keys[1]), self.CASTCipher(keys[0])]
+        # Check header validity first
+        for cipher in ciphers:
+            header = cipher.decrypt(header)
+        magicheader = header[:4]
+        version = header[4:6]
+        if magicheader != "TRUE":
             raise DecryptError
-        if outputfile=="":
-            outputfile_name=header.split('$')[1]
-            outputfile_path=inputfile[:len(inputfile)-len(inputfile.split('/')[-1])]
-            outputfile=outputfile_path+outputfile_name
-        outputfile_handle=open(outputfile,'wb') # ORIGINAL FILE NAME
-        return self.decrypt_content(key, inputfile_handle, outputfile_handle)
+        if version != self.SD_VERSION:
+            raise VersionError
+        # Decryption process
+        for cipher in ciphers:
+            content = cipher.decrypt(content)
+        return content
+
+    def verify():
+        # Version verify to be added in future version.
+        pass
 
     def hash_keyfile(self, keyfile):
         keyfile_handle=open(keyfile,'rb')
         keyfile_content=keyfile_handle.read()
         key=self.salt+self.hash_SHA256(keyfile_content, "")
         return key
-
