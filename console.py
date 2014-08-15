@@ -207,7 +207,6 @@ def show_main_menu(f):
         show_main_menu(f)
 
 def main():
-
     # Get argument first.
     if len(sys.argv) == 1:
         f=""
